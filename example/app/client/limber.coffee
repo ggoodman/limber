@@ -217,7 +217,10 @@ class limber.geometry.Projection
     unless @max < proj.min or @min > proj.max
       if @min > proj.min and @min < proj.max then overlap = proj.max - @min
       else if @max < proj.max and @max > proj.min then overlap = proj.min - @max
-      else overlap = @max - @min
+      else overlap = Math.min(@max - @min, proj.max - proj.min)
+    
+    overlap = Number.MAX_VALUE if overlap is Number.POSITIVE_INFINITY
+    overlap = -Number.MAX_VALUE if overlap is Number.NEGATIVE_INFINITY
 
     proj = null
     overlap
@@ -241,8 +244,25 @@ class limber.geometry.ConvexHull
   subtract: (x, y) ->
     vertex.subtract(x, y) for vertex in @vertices
     @
-
+    
   testCollision: (convex) ->
+    test = "test"
+    test +=
+      if this instanceof limber.geometry.Polygon then "Polygon"
+      else if this instanceof limber.geometry.Circle then "Circle"
+    test +=
+      if convex instanceof limber.geometry.Polygon then "Polygon"
+      else if convex instanceof limber.geometry.Circle then "Circle"
+    
+    throw new Error("Collisions method not implemented: #{test}") unless this[test]
+    
+    method = this[test]
+    
+    method.call(this, convex)
+    
+    
+  testPolygonPolygon: (convex) ->
+    
     minOverlap = Number.POSITIVE_INFINITY
     minAxis = null
     multAxes = false
@@ -283,6 +303,10 @@ class limber.geometry.ConvexHull
     @normals or @normals = for vertex, i in @vertices
       @vertices[(i + 1) % @vertices.length].clone().subtract(vertex).rotateRight().normalize()
   
+  addNormal: (x, y) ->
+    @normals ||= []
+    @normals.push(limber.vector(x, y))
+    @
   addVertex: (x, y) ->
     @vertices ||= []
     @vertices.push(limber.vector(x, y))
@@ -290,18 +314,9 @@ class limber.geometry.ConvexHull
 
   getVertices: -> @vertices or []
 
-class limber.geometry.Wall extends limber.geometry.ConvexHull
-  constructor: (x0, y0, x1, y1) ->
-    if arguments.length == 2
-      @vertices = [new limber.geometry.Vector(x0)]
-      @normals = [new limber.geometry.Vector(y0)]
-    else if arguments.length == 4
-      @vertices = [new limber.geometry.Vector(x0, y0)]
-      @normals = [new limber.geometry.Vector(x1, y1)]
-      
+class limber.geometry.Polygon extends limber.geometry.ConvexHull
 
-
-class limber.geometry.AABB extends limber.geometry.ConvexHull
+class limber.geometry.AABB extends limber.geometry.Polygon
   constructor: (x0, y0, x1, y1) ->
     if x0 instanceof limber.geometry.AABB
       @bl = x0.bl.clone()
@@ -334,6 +349,28 @@ class limber.geometry.AABB extends limber.geometry.ConvexHull
   
   toVector: -> @tr.clone().subtract(@bl)
 
+
+
+class limber.geometry.Wall extends limber.geometry.AABB      
+  constructor: (x, y, offset, yoff) ->
+    #NOTE: ONLY WORKS FOR AABB WALLS FOR NOW
+    
+    if x
+      @addVertex(offset, -Number.MAX_VALUE)
+      @addVertex(offset, +Number.MAX_VALUE)
+      @addVertex(-x * Number.MAX_VALUE, yoff)
+    else
+      @addVertex(-Number.MAX_VALUE, offset)
+      @addVertex(+Number.MAX_VALUE, offset)
+    
+      @addVertex(yoff, -y * Number.MAX_VALUE)
+    @addNormal(x, y)
+    
+    normal = null
+
+  # Special case for Walls
+  testPolygonCircle: (circle) ->
+###
 class limber.geometry.Box extends limber.geometry.ConvexHull
   constructor: (x0, y0, x1, y1) ->
     if x0 instanceof limber.geometry.Box
@@ -357,6 +394,10 @@ class limber.geometry.Box extends limber.geometry.ConvexHull
   intersect: (box) ->
     return null if box.tl.x >= @br.x or box.br.x <= @tl.x or box.tl.y >= @br.y or box.br.y <= @tl.y
     return new limber.geometry.Box Math.max(box.tl.x, @tl.x), Math.max(box.tl.y, @tl.y), Math.min(box.br.x, @br.x), Math.min(box.br.y, @br.y)
+###
+
+class limber.geometry.Circle extends limber.geometry.ConvexHull
+  
 
 #--------#
 # ENGINE #
@@ -475,40 +516,30 @@ class limber.trait.Bounded extends limber.trait.Trait
   requires: ["position", "body"]
   
   constructor: (x0, y0, x1, y1) ->
-    #TODO: Better solution for minimum and maximum
-    min = -1000
-    max = 1000
-    
     boundaries = [
-      new limber.geometry.AABB(min, min, x0, max)
-      new limber.geometry.AABB(min, min, max, y0)
-      new limber.geometry.AABB(x1, min, max, max)
-      new limber.geometry.AABB(min, y1, max, max)
-      #new limber.geometry.Wall(x0, y0, 1, 0)
-      #new limber.geometry.Wall(x0, y0, 0, 1)
-      #new limber.geometry.Wall(x1, y1, -1, 0)
-      #new limber.geometry.Wall(x1, y1, 0, -1)
+      new limber.geometry.Wall(1, 0, x0, y1)
+      new limber.geometry.Wall(0, 1, y0, x1)
+      new limber.geometry.Wall(-1, 0, x1, y0)
+      new limber.geometry.Wall(0, -1, y1, x0)
     ]
     
     self = this
     @on "augment", (entity) ->
       entity.on "render", (engine) ->
         for wall in boundaries
-          rect = wall
-          size = wall.toVector()
           engine.context.save()
-          engine.context.fillStyle = "#00FF00"
-          engine.context.fillRect(rect.bl.x, rect.bl.y, size.x, size.y)
+          engine.context.moveTo(wall.vertices[0].x, wall.vertices[0].y)
+          engine.context.lineTo(wall.vertices[1].x, wall.vertices[1].y)
+          engine.context.stroke()
           engine.context.restore()
-          
-          engine.context.fillRect(boundaries[0].bl.x, boundaries[0].bl.y, 
+
       entity.on "update", (engine) ->
         entity = @
         bounds = entity.body.clone().add(entity.position)
         
         for wall in boundaries
           if mtv = bounds.testCollision(wall)
-            entity.emit "collision", engine, mtv, wall
+            @emit "collision", engine, mtv, wall
 
 class limber.trait.CollisionDetection extends limber.trait.Trait
   requires: ["position", "body"]
@@ -530,6 +561,49 @@ class limber.trait.CollisionDetection extends limber.trait.Trait
             other.emit "collision", engine, mtv.flip(), entity
         seenInFrame.push(entity)
 
+class limber.trait.CollisionAvoidance extends limber.trait.Trait
+  requires: ["position", "velocity", "body"]
+  
+  constructor: ->
+    self = this
+    @flock = []
+    
+    @on "augment", (entity) ->
+      self.flock.push(entity)
+      entity.on "update", -> self.avoid(entity)
+      ###
+      entity.on "render", (engine) ->
+        if @view
+          engine.context.save()
+          engine.context.beginPath()
+          engine.context.moveTo(@view.vertices[0].x, @view.vertices[0].y)
+          engine.context.lineTo(@view.vertices[1].x, @view.vertices[1].y)
+          engine.context.lineTo(@view.vertices[2].x, @view.vertices[2].y)
+          engine.context.lineTo(@view.vertices[3].x, @view.vertices[3].y)
+          engine.context.stroke()
+          engine.context.closePath()
+          engine.context.restore()
+      ###
+  
+  avoid: (entity) ->
+    accel = new limber.geometry.Vector
+    
+    vel = 30#entity.velocity.clone().magnitude()
+    dir = entity.velocity.clone().normalize()
+    pos = entity.position.clone()
+    normal = dir.clone().rotateRight()
+    
+    entity.view = new limber.geometry.Polygon
+    entity.view.addVertex(pos.add(normal.clone().scale(10))) #side, right
+    entity.view.addVertex(pos.add(dir.clone().scale(vel).add(normal.clone().scale(1)))) #front, right
+    entity.view.addVertex(pos.add(normal.clone().scale(- 20))) #front, left
+    entity.view.addVertex(pos.add(dir.clone().scale(- vel).add(normal.clone().scale(1)))) #side, left
+    
+    for boid in @flock when boid != entity
+      if mtv = boid.body.clone().add(boid.position).testCollision(entity.view)
+        entity.velocity.subtract(mtv.axis.scale(mtv.overlap))
+
+  
 class limber.trait.Flocking extends limber.trait.Trait
   requires: ["position", "velocity"]
   
@@ -542,23 +616,43 @@ class limber.trait.Flocking extends limber.trait.Trait
       entity.on "update", -> self.steer(entity)
 
   steer: (entity) ->
+    approach = new limber.geometry.Vector
+    avoid = new limber.geometry.Vector
+    match = new limber.geometry.Vector
     accel = new limber.geometry.Vector
+    
+    avoid.n = match.n = accel.n = 0
     
     for boid in @flock when boid != entity
       dist = boid.position.clone().subtract(entity.position)
       dist2 = dist.magnitudeSq()
       
-      if dist2 < 2000 then accel.add(dist.clone().scale(0.0075 / @flock.length))
-      if dist2 < 800 then accel.subtract(boid.position.clone().subtract(entity.position).scale(Math.pow((800 - dist2) / 400, 4)))
-      if dist2 < 2000 then accel.add(boid.velocity.clone().subtract(entity.velocity).scale(8 / @flock.length))
+      if dist2 < 2000
+        approach.add(dist.clone().scale(0.001))
+        approach.n++
+      if dist2 < 800
+        avoid.subtract(boid.position.clone().subtract(entity.position).shrink(dist2 / 200))
+        avoid.n++
+      if dist2 < 1000
+        match.add(boid.velocity.clone().subtract(entity.velocity).scale(0.1))
+        match.n++
 
-    if (a2 = accel.magnitudeSq()) > 400 then accel.scale(200 / a2)
-    
+    approach.shrink(approach.n) if approach.n
+    avoid.shrink(avoid.n) if avoid.n
+    match.shrink(match.n) if match.n
+
+
+    accel
+      .add approach
+      .add avoid
+      #.add match
+      .normalize()
+      .scale(1)
+
     entity.velocity.add(accel)
+
     
-    vel = entity.velocity.magnitude()
-    if vel < 100 then entity.velocity.scale(1.2)
-    else if vel > 400 then entity.velocity.scale(0.5)
+
 
 class limber.trait.CollisionResponse extends limber.trait.Trait
   requires: "velocity"
@@ -567,8 +661,7 @@ class limber.trait.CollisionResponse extends limber.trait.Trait
       entity.on "render", -> @collided = false
       entity.on "collision", (engine, mtv, other) ->
         @collided = true
-        entity.velocity.reflect(mtv.axis)
-        entity.position.add(mtv.axis.scale(mtv.overlap))
+        @position.add(mtv.axis.clone().scale(mtv.overlap / 2))
 
 class limber.trait.RandomAcceleration extends limber.trait.Trait
   requires: "velocity"
@@ -578,3 +671,15 @@ class limber.trait.RandomAcceleration extends limber.trait.Trait
     @on "augment", (entity) ->
       entity.on "update", (engine) ->
         entity.velocity.add(Math.random() * twiceSpeed - speed, Math.random() * twiceSpeed - speed)
+
+class limber.trait.ConstrainSpeed extends limber.trait.Trait
+  requires: "velocity"
+  
+  constructor: (min = 20, max = 200) ->
+    minSq = min * min
+    maxSq = max * max
+    
+    @on "augment", (entity) ->
+      entity.on "update", (engine) ->
+        entity.velocity.scale(Math.sqrt(v) / maxSq) if (v = entity.velocity.magnitudeSq()) > maxSq
+        entity.velocity.scale(min / Math.sqrt(v)) if v < minSq 

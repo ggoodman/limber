@@ -36,6 +36,6 @@ exports.config =
   #    be_main:    "tcp://10.1.1.10:9000"
   
   redis:
-    host: "angler.redistogo.com"
-    port: 9554
-    password: "6e1780447672cb3ce27511231fb2fa69"
+    host: "icefish.redistogo.com"
+    port: 9410
+    password: "6f4d7cf6402c6fe4f6ab8599881c6a3d"

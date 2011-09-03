@@ -2,6 +2,7 @@ exports.limber = limber =
   version: "0.0.2"
   geometry: {}
   component: {}
+  entity: {}
   trait: {}
   engine: {}
   
@@ -54,18 +55,16 @@ class limber.component.Component extends limber.EventEmitter
     @children.push(component)
     @emit "attach", component.emit("attached", this)
     @
+  
+  attachTo: (component) ->
+    component.attach(this)
+    @
     
   detach: (component) ->
     @children ||= []
     @children.splice(index, 1) unless -1 == (index = @children.indexOf(component))
     @emit "detach", component.emit("detached", this)
     @
-  
-  mixin: (name, trait) ->
-    @traits ||= {}
-    @traits[name] = trait
-    
-    trait.augment(this)
 
 class limber.component.FPS extends limber.component.Component
   constructor: (id) ->
@@ -105,6 +104,9 @@ class limber.geometry.Vector
       else if Array.isArray(x) then x
       else if x !=  null and y != null then [x, y]
       else [0, 0]
+      
+    x = null
+    y = null
     
   clone: -> new limber.geometry.Vector(this)
   
@@ -118,11 +120,24 @@ class limber.geometry.Vector
     @y /= scalar
     @
   
+  product: (x, y) ->
+    vector = new limber.geometry.Vector(x, y)
+    
+    @x *= vector.x
+    @y *= vector.y
+    
+    vector = null
+    
+    @
+  
   add: (x, y) ->
     vector = new limber.geometry.Vector(x, y)
     
     @x += vector.x
     @y += vector.y
+    
+    vector = null
+    
     @
   
   subtract: (x, y) ->
@@ -130,13 +145,21 @@ class limber.geometry.Vector
     
     @x -= vector.x
     @y -= vector.y
+    
+    vector = null
+    
     @
   
   normalize: ->
-    magnitude = @magnitude()
-    
-    @x /= magnitude
-    @y /= magnitude
+    if @x == 0
+      @y = 1
+    else if @y == 0
+      @x = 1
+    else
+      magnitude = @magnitude()
+      
+      @x /= magnitude
+      @y /= magnitude
     @
   
   reflect: (x, y) ->
@@ -144,11 +167,19 @@ class limber.geometry.Vector
     
     @add(normal.scale(-2 * @dot(normal)))
     
+    normal = null
+    
+    @
+    
     
   dot: (x, y) ->
     vector = new limber.geometry.Vector(x, y)
     
-    @x * vector.x + @y * vector.y
+    dot = @x * vector.x + @y * vector.y
+    
+    vector = null
+    
+    dot
   
   magnitude: -> Math.sqrt(@x * @x + @y * @y)
   magnitudeSq: -> @x * @x + @y * @y
@@ -165,20 +196,41 @@ class limber.geometry.Vector
     [@x, @y] = [@y, -@x]
     @
 
+  rotateLeft: ->
+    [@x, @y] = [-@y, @x]
+    @
+
 class limber.geometry.Projection
   constructor: (x = null, y = null) ->
     [@min, @max] = 
       if x instanceof limber.geometry.Projection then [x.min, x.max]
       else if Array.isArray(x) then x
-      else if x !=  null and y != null then [x, y]
-      else [0, 0]
+      else [x, y]
+      #else [0, 0]
+    x = null
+    y = null
   
   overlap: (x, y) ->
     proj = new limber.geometry.Projection(x, y)
+    overlap = 0
     
-    Math.min(@max, proj.max) - Math.max(@min, proj.min)
+    unless @max < proj.min or @min > proj.max
+      if @min > proj.min and @min < proj.max then overlap = proj.max - @min
+      else if @max < proj.max and @max > proj.min then overlap = proj.min - @max
+      else overlap = @max - @min
+
+    proj = null
+    overlap
+
     
+class limber.geometry.MTV
+  constructor: (axis, @overlap) ->
+    @axis = limber.vector(axis)
   
+  flip: ->
+    @axis.flip()
+    @
+
 class limber.geometry.ConvexHull
   constructor: (vertices...) ->
     @vertices = for vertex in vertices then limber.vector(vertex)
@@ -196,7 +248,10 @@ class limber.geometry.ConvexHull
     multAxes = false
     
     for axis in @getFaceNormals().concat(convex.getFaceNormals())
-      overlap = @projectOnto(axis).overlap(convex.projectOnto(axis))
+      proj1 = @projectOnto(axis)
+      proj2 = convex.projectOnto(axis)
+      overlap = proj1.overlap(proj2)
+      
       return unless overlap
       if overlap == minOverlap
         minAxis.add(axis)
@@ -208,10 +263,10 @@ class limber.geometry.ConvexHull
     
     minAxis.normalize() if multAxes
     
-    [minAxis, minOverlap]
+    new limber.geometry.MTV(minAxis, minOverlap)
   
   projectOnto: (x, y) ->
-    throw new Error("Missing vertices") unless @vertices and @vertices.length
+    return new limber.geometry.Projection(0, 0) unless @vertices and @vertices.length
     
     axis = limber.vector(x, y)
     min = Number.POSITIVE_INFINITY
@@ -234,30 +289,52 @@ class limber.geometry.ConvexHull
     @
 
   getVertices: -> @vertices or []
+
+class limber.geometry.Wall extends limber.geometry.ConvexHull
+  constructor: (x0, y0, x1, y1) ->
+    if arguments.length == 2
+      @vertices = [new limber.geometry.Vector(x0)]
+      @normals = [new limber.geometry.Vector(y0)]
+    else if arguments.length == 4
+      @vertices = [new limber.geometry.Vector(x0, y0)]
+      @normals = [new limber.geometry.Vector(x1, y1)]
       
 
+
 class limber.geometry.AABB extends limber.geometry.ConvexHull
-  constructor: (x, y, @halfWidth, @halfHeight) ->
-    @center = limber.vector(x, y)
+  constructor: (x0, y0, x1, y1) ->
+    if x0 instanceof limber.geometry.AABB
+      @bl = x0.bl.clone()
+      @tr = x0.tr.clone()
+    else if arguments.length == 2
+      @bl = new limber.geometry.Vector(x0)
+      @tr = new limber.geometry.Vector(y0)
+    else if arguments.length == 4
+      @bl = new limber.geometry.Vector(x0, y0)
+      @tr = new limber.geometry.Vector(x1, y1)
     
-    @addVertex(x - @halfWidth, y - @halfHeight)
-    @addVertex(x - @halfWidth, y + @halfHeight)
-    @addVertex(x + @halfWidth, y - @halfHeight)
-    @addVertex(x + @halfWidth, y + @halfHeight)
+    @addVertex(@bl.x, @bl.y)
+    @addVertex(@bl.x, @tr.y)
+    @addVertex(@tr.x, @tr.y)
+    @addVertex(@tr.x, @bl.y)
+    
+    @normals = [limber.vector(1, 0), limber.vector(0, 1)]
   
-  clone: -> new limber.geometry.AABB(@center.x, @center.y, @halfWidth, @halfHeight)
+  clone: -> new limber.geometry.AABB(@bl, @tr)
   add: (x, y) ->
-    @center.add(limber.vector(x, y))
+    @bl.add(x, y)
+    @tr.add(x, y)
     super(x, y)
   subtract: (x, y) ->
-    @center.subtract(limber.vector(x, y))
+    @bl.subtract(x, y)
+    @tr.subtract(x, y)
     super(x, y)
   
-  getFaceNormals: ->
-    [limber.vector(1, 0), limber.vector(0, 1)]
+  getFaceNormals: -> @normals
+  
+  toVector: -> @tr.clone().subtract(@bl)
 
-
-class limber.geometry.Box
+class limber.geometry.Box extends limber.geometry.ConvexHull
   constructor: (x0, y0, x1, y1) ->
     if x0 instanceof limber.geometry.Box
       @tl = x0.tl.clone()
@@ -328,10 +405,176 @@ class limber.engine.Canvas2D extends limber.component.Component
       setInterval(innerFrame, ONE_FRAME_TIME)
 
 
+#--------#
+# ENTITY #
+#--------#
+
+class limber.entity.Entity extends limber.component.Component
+  constructor: (args...) ->
+    self = this
+    @on "update", @update
+    @on "render", @render
+    @on "attached", (component) ->
+      self.echo component, "update"
+      self.echo component, "render"
+    @initialize(args...)
+    
+  mixin: (trait, name) ->
+    provides = if Array.isArray(trait.provides) then trait.provides else [trait.provides]
+    requires = if Array.isArray(trait.requires) then trait.requires else [trait.requires]
+    
+    @traits ||= {}
+    @requireTraits(requires)
+    trait.emit("augment", this)
+    @traits[name] = trait for name in provides
+    @
+  
+  requireTraits: (requires...) ->
+    requires = requires[0] if Array.isArray(requires[0])
+    for name in requires
+      throw new Error("Missing required trait: #{name}") unless @traits[name]
+    @
+    
+  
+  initialize: -> @
+  update: -> @
+  render: -> @
 
 #-------#
 # TRAIT #
 #-------#
 
-class limber.trait.Trait
-  augment: (component) -> @
+class limber.trait.Trait extends limber.EventEmitter
+  provides: []
+  requires: []
+  augment: (entity) -> @
+  
+class limber.trait.Position extends limber.trait.Trait
+  provides: "position"
+  constructor: (x, y) ->
+    @on "augment", (entity) -> entity.position = limber.vector(x, y)
+
+class limber.trait.Velocity extends limber.trait.Trait
+  provides: "velocity"
+  requires: "position"
+  constructor: (x, y) ->
+    @on "augment", (entity) ->
+      entity.velocity = limber.vector(x, y)
+      entity.on "update", (engine) ->
+        entity.position.add entity.velocity.clone().scale(engine.timer.delta / 1000)
+
+class limber.trait.AABBBody extends limber.trait.Trait
+  provides: "body"
+  
+  constructor: (x0, y0, x1, y1) ->
+    aabb = new limber.geometry.AABB(x0, y0, x1, y1)
+  
+    @on "augment", (entity) -> entity.body = aabb
+
+class limber.trait.Bounded extends limber.trait.Trait
+  requires: ["position", "body"]
+  
+  constructor: (x0, y0, x1, y1) ->
+    #TODO: Better solution for minimum and maximum
+    min = -1000
+    max = 1000
+    
+    boundaries = [
+      new limber.geometry.AABB(min, min, x0, max)
+      new limber.geometry.AABB(min, min, max, y0)
+      new limber.geometry.AABB(x1, min, max, max)
+      new limber.geometry.AABB(min, y1, max, max)
+      #new limber.geometry.Wall(x0, y0, 1, 0)
+      #new limber.geometry.Wall(x0, y0, 0, 1)
+      #new limber.geometry.Wall(x1, y1, -1, 0)
+      #new limber.geometry.Wall(x1, y1, 0, -1)
+    ]
+    
+    self = this
+    @on "augment", (entity) ->
+      entity.on "render", (engine) ->
+        for wall in boundaries
+          rect = wall
+          size = wall.toVector()
+          engine.context.save()
+          engine.context.fillStyle = "#00FF00"
+          engine.context.fillRect(rect.bl.x, rect.bl.y, size.x, size.y)
+          engine.context.restore()
+          
+          engine.context.fillRect(boundaries[0].bl.x, boundaries[0].bl.y, 
+      entity.on "update", (engine) ->
+        entity = @
+        bounds = entity.body.clone().add(entity.position)
+        
+        for wall in boundaries
+          if mtv = bounds.testCollision(wall)
+            entity.emit "collision", engine, mtv, wall
+
+class limber.trait.CollisionDetection extends limber.trait.Trait
+  requires: ["position", "body"]
+
+  constructor: ->
+    bodies = []
+    self = this
+    seenInFrame = []
+    
+    @on "augment", (entity) -> 
+      entity.on "render", -> seenInFrame = []
+      entity.on "update", (engine) ->
+        myBody = entity.body.clone().add(entity.position)
+        for other in seenInFrame
+          otherBody = other.body.clone().add(other.position)
+          
+          if mtv = myBody.testCollision(otherBody)
+            entity.emit "collision", engine, mtv, other
+            other.emit "collision", engine, mtv.flip(), entity
+        seenInFrame.push(entity)
+
+class limber.trait.Flocking extends limber.trait.Trait
+  requires: ["position", "velocity"]
+  
+  constructor: ->
+    self = this
+    @flock = []
+    
+    @on "augment", (entity) ->
+      self.flock.push(entity)
+      entity.on "update", -> self.steer(entity)
+
+  steer: (entity) ->
+    accel = new limber.geometry.Vector
+    
+    for boid in @flock when boid != entity
+      dist = boid.position.clone().subtract(entity.position)
+      dist2 = dist.magnitudeSq()
+      
+      if dist2 < 2000 then accel.add(dist.clone().scale(0.0075 / @flock.length))
+      if dist2 < 800 then accel.subtract(boid.position.clone().subtract(entity.position).scale(Math.pow((800 - dist2) / 400, 4)))
+      if dist2 < 2000 then accel.add(boid.velocity.clone().subtract(entity.velocity).scale(8 / @flock.length))
+
+    if (a2 = accel.magnitudeSq()) > 400 then accel.scale(200 / a2)
+    
+    entity.velocity.add(accel)
+    
+    vel = entity.velocity.magnitude()
+    if vel < 100 then entity.velocity.scale(1.2)
+    else if vel > 400 then entity.velocity.scale(0.5)
+
+class limber.trait.CollisionResponse extends limber.trait.Trait
+  requires: "velocity"
+  constructor: ->
+    @on "augment", (entity) ->
+      entity.on "render", -> @collided = false
+      entity.on "collision", (engine, mtv, other) ->
+        @collided = true
+        entity.velocity.reflect(mtv.axis)
+        entity.position.add(mtv.axis.scale(mtv.overlap))
+
+class limber.trait.RandomAcceleration extends limber.trait.Trait
+  requires: "velocity"
+  
+  constructor: (speed = 20) ->
+    twiceSpeed = speed * 2
+    @on "augment", (entity) ->
+      entity.on "update", (engine) ->
+        entity.velocity.add(Math.random() * twiceSpeed - speed, Math.random() * twiceSpeed - speed)
